@@ -1,0 +1,41 @@
+UI Test Notes - 2026-04-17
+
+Age Gate:
+- Works correctly - DOB selection with Month/Day/Year dropdowns
+- Blocks content until verified
+- After verification, redirects to main app
+
+Main App (Home / AI Creative Studio):
+- Shows all 8 AI tool cards: Text to Image, Text to Video, Image to Video, Video Extension, Face Swap, Virtual Try-On, Image Upscale, Upload Media
+- Bottom navigation: Create, Game, Gallery, Settings
+- Top header: Expose logo, navigation tabs, user avatar
+- Stats bar: 8 AI Tools, 3 AI Providers, 0 Filters
+- Personalized greeting: "What will you create, Justin?"
+- Dark theme with crimson accents - matches Expose branding
+
+Text to Image Tool:
+- Provider selector (Replicate default)
+- Prompt and Negative Prompt textareas
+- Advanced Settings: Width/Height (1024px), Inference Steps (30), Guidance Scale (7)
+- Generate button
+- Back navigation arrow
+
+Game Mode:
+- 6 categories: Romance, Adventurous, Kinky, Role Play, Fantasy, Quickie
+- 4 spice levels: Mild, Medium, Hot, Extreme
+- Custom context input
+- Generate Dare button
+- Show History button
+
+Gallery:
+- Filter tabs: All, Images, Videos
+- Source filter: All Sources, AI Generated, Uploaded
+- Empty state: "No media yet"
+
+Settings:
+- 3 tabs: API Keys, Profile, Preferences
+- API Keys: Replicate, fal.ai, Stability AI with Get Key links and Save buttons
+- Profile: Display Name, Bio, Account Info
+- Preferences: Default AI Provider, Default Spice Level
+
+All pages render correctly with dark theme and crimson accents.

@@ -28,9 +28,9 @@ upsertUserPreferences,
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
 
-const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
-const providerSchema = z.enum(["huggingface", "fal_ai", "stability_ai"]);
+const providerSchema = z.enum(["fal_ai"]);
 const mediaTypeSchema = z.enum(["image", "video"]);
 const generationToolSchema = z.enum([
 "text_to_image",

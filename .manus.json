@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "name": "expose",
+  "description": "Adults-only AI content platform with couples game, image generation, and partner pose features",
+  "type": "node",
+  "buildScript": "pnpm build",
+  "startScript": "pnpm start",
+  "env": [
+    "DATABASE_URL",
+    "REPLICATE_API_TOKEN",
+    "FAL_AI",
+    "FAL_KEY",
+    "STABILITY_API_KEY",
+    "HUGGINGFACE_API_KEY"
+  ],
+  "files": {
+    "server": "./server",
+    "client": "./client",
+    "shared": "./shared",
+    "drizzle": "./drizzle"
+  },
+  "ports": {
+    "app": 3000,
+    "api": 5000
+  },
+  "healthcheck": "/api/health",
+  "webhooks": {
+    "github": "/api/webhooks/github"
+  }
+}

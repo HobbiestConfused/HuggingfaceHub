@@ -1,4 +1,3 @@
-```typescript
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
@@ -356,6 +355,25 @@ Keep it to 2-4 sentences. Make it actionable right now.`;
         return { success: true };
       }),
   }),
+
+  // ─── Prompt Templates ────────────────────────────────────────────────────
+  promptTemplates: router({
+    list: publicProcedure
+      .input(z.object({
+        category: z.string().optional(),
+        tool: z.string().optional(),
+      }).optional())
+      .query(({ input }) => {
+        let results = PROMPT_TEMPLATES;
+        if (input?.category) {
+          results = results.filter((t) => t.category === input.category);
+        }
+        if (input?.tool) {
+          results = results.filter((t) => t.tools.includes(input.tool as string));
+        }
+        return results;
+      }),
+  }),
 });
 
 // ─── Async Generation Processing ────────────────────────────────────────────
@@ -538,6 +556,160 @@ async function callHuggingFaceApi(
 
 // ─── FAL API Caller ─────────────────────────────────────────────────────────
 
+const FAL_MODELS: Record<string, { model: string; type: "image" | "video" }> = {
+  text_to_image: { model: "fal-ai/flux/dev", type: "image" },
+  text_to_video: { model: "fal-ai/bytedance/seedance-2.0/text-to-video", type: "video" },
+  image_to_video: { model: "fal-ai/bytedance/seedance-2.0/image-to-video", type: "video" },
+  video_extension: { model: "fal-ai/bytedance/seedance-2.0/text-to-video", type: "video" },
+  face_swap: { model: "fal-ai/face-swap", type: "image" },
+  virtual_try_on: { model: "fal-ai/cat-vton", type: "image" },
+  image_upscale: { model: "fal-ai/esrgan", type: "image" },
+};
+
 async function callFalApi(
   input: { tool: string; prompt?: string; inputParams?: any; inputMediaId?: number },
-  api
+  apiKey: string
+): Promise<ProviderResult | null> {
+  const modelConfig = FAL_MODELS[input.tool];
+  if (!modelConfig) {
+    throw new Error(`Tool ${input.tool} not supported by FAL API`);
+  }
+
+  const apiUrl = `https://fal.run/${modelConfig.model}`;
+
+  type FalRequestBody = {
+    enable_safety_checker: boolean;
+    prompt?: string;
+    image_url?: string;
+    image_size?: string;
+    aspect_ratio?: string;
+    duration?: string;
+    scale?: number;
+    seed?: number;
+    num_inference_steps?: number;
+    guidance_scale?: number;
+    base_image_url?: string;
+    swap_image_url?: string;
+    human_image_url?: string;
+    garment_image_url?: string;
+  };
+
+  const requestBody: FalRequestBody = { enable_safety_checker: false };
+
+  if (input.prompt) requestBody.prompt = input.prompt;
+
+  if (input.tool === "image_upscale") {
+    if (input.inputParams?.image_url) requestBody.image_url = input.inputParams.image_url;
+    if (input.inputParams?.scale) requestBody.scale = input.inputParams.scale;
+  } else if (input.tool === "face_swap") {
+    if (input.inputParams?.base_image_url) requestBody.base_image_url = input.inputParams.base_image_url;
+    if (input.inputParams?.swap_image_url) requestBody.swap_image_url = input.inputParams.swap_image_url;
+  } else if (input.tool === "virtual_try_on") {
+    if (input.inputParams?.human_image_url) requestBody.human_image_url = input.inputParams.human_image_url;
+    if (input.inputParams?.garment_image_url) requestBody.garment_image_url = input.inputParams.garment_image_url;
+  } else if (input.tool === "image_to_video") {
+    if (input.inputParams?.image_url) requestBody.image_url = input.inputParams.image_url;
+    if (input.inputParams?.duration) requestBody.duration = input.inputParams.duration;
+    if (input.inputParams?.aspect_ratio) requestBody.aspect_ratio = input.inputParams.aspect_ratio;
+  } else {
+    // Handles text_to_image, text_to_video, and video_extension
+    if (input.inputParams?.image_size) requestBody.image_size = input.inputParams.image_size;
+    if (input.inputParams?.aspect_ratio) requestBody.aspect_ratio = input.inputParams.aspect_ratio;
+    if (input.inputParams?.duration) requestBody.duration = input.inputParams.duration;
+    if (input.inputParams?.num_inference_steps) requestBody.num_inference_steps = input.inputParams.num_inference_steps;
+    if (input.inputParams?.guidance_scale) requestBody.guidance_scale = input.inputParams.guidance_scale;
+    if (input.inputParams?.seed) requestBody.seed = input.inputParams.seed;
+  }
+
+  const response = await fetch(apiUrl, {
+    method: "POST",
+    headers: {
+      "Authorization": `Key ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`FAL API error: ${response.status} - ${errText}`);
+  }
+
+  const data = await response.json();
+
+  if (modelConfig.type === "video") {
+    if (data.video?.url) return { url: data.video.url, type: "video" };
+  } else {
+    if (data.images?.[0]?.url) return { url: data.images[0].url, type: "image" };
+    if (data.image?.url) return { url: data.image.url, type: "image" };
+  }
+
+  throw new Error("No result returned from FAL API");
+}
+
+// ─── Prompt Templates Data ───────────────────────────────────────────────────
+
+const PROMPT_TEMPLATES: Array<{
+  id: string;
+  name: string;
+  prompt: string;
+  category: string;
+  tools: string[];
+}> = [
+  {
+    id: "cp-portrait-1",
+    name: "Romantic Couple Portrait",
+    prompt: "A romantic couple sharing a tender moment, soft golden hour lighting, bokeh background, professional photography",
+    category: "couples_portraits",
+    tools: ["text_to_image"],
+  },
+  {
+    id: "cp-portrait-2",
+    name: "Intimate Couple Close-Up",
+    prompt: "Close-up portrait of two people in love, warm candlelight ambiance, shallow depth of field, cinematic color grading",
+    category: "couples_portraits",
+    tools: ["text_to_image"],
+  },
+  {
+    id: "cp-video-1",
+    name: "Couple Slow Motion",
+    prompt: "Two lovers walking together on a beach at sunset, slow motion, cinematic, romantic atmosphere",
+    category: "couples_portraits",
+    tools: ["text_to_video", "image_to_video"],
+  },
+  {
+    id: "fantasy-1",
+    name: "Fantasy Romance",
+    prompt: "A couple in a magical fantasy setting, enchanted forest, glowing particles, ethereal lighting, dreamlike atmosphere",
+    category: "fantasy",
+    tools: ["text_to_image", "text_to_video"],
+  },
+  {
+    id: "boudoir-1",
+    name: "Elegant Boudoir",
+    prompt: "Elegant boudoir style photography, moody lighting, silk sheets, artistic and tasteful, black and white",
+    category: "boudoir",
+    tools: ["text_to_image"],
+  },
+  {
+    id: "boudoir-2",
+    name: "Boudoir Video Mood",
+    prompt: "Slow cinematic boudoir ambiance, candles flickering, soft shadows, luxury bedroom setting",
+    category: "boudoir",
+    tools: ["text_to_video"],
+  },
+  {
+    id: "art-1",
+    name: "Artistic Nude Silhouette",
+    prompt: "Artistic silhouette photography, dramatic backlight, fine art style, tasteful and elegant composition",
+    category: "fine_art",
+    tools: ["text_to_image"],
+  },
+  {
+    id: "upscale-1",
+    name: "4x Photo Enhancement",
+    prompt: "Upscale and enhance photo to 4K resolution, restore fine details, improve sharpness",
+    category: "enhancement",
+    tools: ["image_upscale"],
+  },
+];

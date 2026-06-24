@@ -369,7 +369,7 @@ Keep it to 2-4 sentences. Make it actionable right now.`;
           results = results.filter((t) => t.category === input.category);
         }
         if (input?.tool) {
-          results = results.filter((t) => t.tools.includes(input.tool!));
+          results = results.filter((t) => t.tools.includes(input.tool as string));
         }
         return results;
       }),
@@ -577,7 +577,24 @@ async function callFalApi(
 
   const apiUrl = `https://fal.run/${modelConfig.model}`;
 
-  const requestBody: any = { enable_safety_checker: false };
+  type FalRequestBody = {
+    enable_safety_checker: boolean;
+    prompt?: string;
+    image_url?: string;
+    image_size?: string;
+    aspect_ratio?: string;
+    duration?: string;
+    scale?: number;
+    seed?: number;
+    num_inference_steps?: number;
+    guidance_scale?: number;
+    base_image_url?: string;
+    swap_image_url?: string;
+    human_image_url?: string;
+    garment_image_url?: string;
+  };
+
+  const requestBody: FalRequestBody = { enable_safety_checker: false };
 
   if (input.prompt) requestBody.prompt = input.prompt;
 
@@ -595,6 +612,7 @@ async function callFalApi(
     if (input.inputParams?.duration) requestBody.duration = input.inputParams.duration;
     if (input.inputParams?.aspect_ratio) requestBody.aspect_ratio = input.inputParams.aspect_ratio;
   } else {
+    // Handles text_to_image, text_to_video, and video_extension
     if (input.inputParams?.image_size) requestBody.image_size = input.inputParams.image_size;
     if (input.inputParams?.aspect_ratio) requestBody.aspect_ratio = input.inputParams.aspect_ratio;
     if (input.inputParams?.duration) requestBody.duration = input.inputParams.duration;

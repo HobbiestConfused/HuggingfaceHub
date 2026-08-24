@@ -599,16 +599,28 @@ async function callFalApi(
   if (input.prompt) requestBody.prompt = input.prompt;
 
   if (input.tool === "image_upscale") {
-    if (input.inputParams?.image_url) requestBody.image_url = input.inputParams.image_url;
+    if (input.inputParams?.image_url || input.inputParams?.input_image) {
+      requestBody.image_url = input.inputParams.image_url || input.inputParams.input_image;
+    }
     if (input.inputParams?.scale) requestBody.scale = input.inputParams.scale;
   } else if (input.tool === "face_swap") {
-    if (input.inputParams?.base_image_url) requestBody.base_image_url = input.inputParams.base_image_url;
-    if (input.inputParams?.swap_image_url) requestBody.swap_image_url = input.inputParams.swap_image_url;
+    if (input.inputParams?.base_image_url || input.inputParams?.input_image) {
+      requestBody.base_image_url = input.inputParams.base_image_url || input.inputParams.input_image;
+    }
+    if (input.inputParams?.swap_image_url || input.inputParams?.target_image) {
+      requestBody.swap_image_url = input.inputParams.swap_image_url || input.inputParams.target_image;
+    }
   } else if (input.tool === "virtual_try_on") {
-    if (input.inputParams?.human_image_url) requestBody.human_image_url = input.inputParams.human_image_url;
-    if (input.inputParams?.garment_image_url) requestBody.garment_image_url = input.inputParams.garment_image_url;
+    if (input.inputParams?.human_image_url || input.inputParams?.input_image) {
+      requestBody.human_image_url = input.inputParams.human_image_url || input.inputParams.input_image;
+    }
+    if (input.inputParams?.garment_image_url || input.inputParams?.target_image) {
+      requestBody.garment_image_url = input.inputParams.garment_image_url || input.inputParams.target_image;
+    }
   } else if (input.tool === "image_to_video") {
-    if (input.inputParams?.image_url) requestBody.image_url = input.inputParams.image_url;
+    if (input.inputParams?.image_url || input.inputParams?.input_image) {
+      requestBody.image_url = input.inputParams.image_url || input.inputParams.input_image;
+    }
     if (input.inputParams?.duration) requestBody.duration = input.inputParams.duration;
     if (input.inputParams?.aspect_ratio) requestBody.aspect_ratio = input.inputParams.aspect_ratio;
   } else {

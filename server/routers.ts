@@ -13,11 +13,15 @@ import {
 } from "./db";
 import { storagePut } from "./storage";
 import { invokeLLM } from "./_core/llm";
+import {
+  resolveProviderApiKey,
+  type ProviderName,
+} from "./_core/providerKeyResolver";
 
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-// Updated providers: Venice (primary), Hugging Face (special), FAL (fallback)
-const providerSchema = z.enum(["venice", "huggingface", "fal_ai"]);
+// Updated providers: Venice (primary), Atlas (video), Hugging Face (special), FAL (fallback)
+const providerSchema = z.enum(["openrouter", "venice", "atlas", "huggingface", "fal_ai"]);
 
 const mediaTypeSchema = z.enum(["image", "video"]);
 const generationToolSchema = z.enum([
@@ -40,6 +44,19 @@ const generationInputSchema = z.object({
 
 type GenerationInput = z.infer<typeof generationInputSchema>;
 type ProviderResult = { url: string; type: "image" | "video" };
+
+const GENERATION_TOOL_MODALITY: Record<GenerationInput["tool"], "image" | "video"> = {
+  text_to_image: "image",
+  image_upscale: "image",
+  face_swap: "image",
+  virtual_try_on: "image",
+  text_to_video: "video",
+  image_to_video: "video",
+  video_extension: "video",
+};
+
+const getGenerationModality = (tool: GenerationInput["tool"]): "image" | "video" =>
+  GENERATION_TOOL_MODALITY[tool];
 
 export const appRouter = router({
   system: systemRouter,
@@ -109,7 +126,7 @@ export const appRouter = router({
         apiKey: z.string().min(1).max(500),
       }))
       .mutation(async ({ ctx, input }) => {
-        await upsertApiKey({ userId: ctx.user.id, provider: input.provider, apiKey: input.apiKey });
+        await upsertApiKey({ userId: ctx.user.id, provider: input.provider as any, apiKey: input.apiKey });
         return { success: true };
       }),
 
@@ -189,25 +206,34 @@ export const appRouter = router({
     create: protectedProcedure
       .input(generationInputSchema)
       .mutation(async ({ ctx, input }) => {
-        const userApiKey = await getActiveApiKey(ctx.user.id, input.provider);
-        const envFallbackKeys: Record<string, string | undefined> = {
-          venice: process.env.VENICE_API_KEY,
-          huggingface: process.env.HUGGINGFACE_API_KEY,
-          fal_ai: process.env.FAL_KEY,
-        };
-
-        const resolvedKey = userApiKey?.apiKey || envFallbackKeys[input.provider];
-        if (!resolvedKey) {
+        if (input.provider === "atlas" && input.tool !== "image_to_video") {
           return {
             success: false,
-            error: `No API key configured for ${input.provider}. Please add one in Settings > API Keys.`,
+            error:
+              "Atlas provider supports only image_to_video with model alibaba/happyhorse-1.1/reference-to-video.",
+          };
+        }
+
+        const modality = getGenerationModality(input.tool);
+        const userApiKey = await getActiveApiKey(ctx.user.id, input.provider);
+        let resolvedKey: string;
+        try {
+          resolvedKey = resolveProviderApiKey({
+            provider: input.provider as ProviderName,
+            modality,
+            userApiKey: userApiKey?.apiKey,
+          });
+        } catch (error) {
+          return {
+            success: false,
+            error: error instanceof Error ? error.message : "Failed to resolve provider API key.",
           };
         }
 
         const genId = await createGeneration({
           userId: ctx.user.id,
           tool: input.tool,
-          provider: input.provider,
+          provider: input.provider as any,
           prompt: input.prompt,
           inputParams: input.inputParams,
           inputMediaId: input.inputMediaId,
@@ -351,7 +377,7 @@ Keep it to 2-4 sentences. Make it actionable right now.`;
         }).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
-        await upsertUserPreferences(ctx.user.id, input);
+        await upsertUserPreferences(ctx.user.id, input as any);
         return { success: true };
       }),
   }),
@@ -391,6 +417,8 @@ async function processGeneration(
 
     if (input.provider === "venice") {
       result = await callVeniceApi(input, apiKeyValue);
+    } else if (input.provider === "atlas") {
+      result = await callAtlasVideoApi(input, apiKeyValue);
     } else if (input.provider === "huggingface") {
       result = await callHuggingFaceApi(input, apiKeyValue);
     } else if (input.provider === "fal_ai") {
@@ -497,7 +525,7 @@ async function callVeniceApi(
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
+      "Authorization": "Key " + apiKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(requestBody),
@@ -524,6 +552,184 @@ async function callVeniceApi(
   throw new Error("No data returned from Venice API");
 }
 
+// ─── Atlas Cloud API Caller ──────────────────────────────────────────────────
+
+const ATLAS_VIDEO_MODEL = "alibaba/happyhorse-1.1/reference-to-video";
+const ATLAS_ALLOWED_RESOLUTIONS = ["480p", "720p", "1080p"] as const;
+const ATLAS_ALLOWED_RATIOS = [
+  "16:9",
+  "9:16",
+  "1:1",
+  "4:3",
+  "3:4",
+  "4:5",
+  "5:4",
+  "9:21",
+  "21:9",
+] as const;
+
+type AtlasResolution = typeof ATLAS_ALLOWED_RESOLUTIONS[number];
+type AtlasRatio = typeof ATLAS_ALLOWED_RATIOS[number];
+
+type AtlasVideoRequestBody = {
+  model: typeof ATLAS_VIDEO_MODEL;
+  prompt: string;
+  images: string[];
+  resolution: AtlasResolution;
+  ratio: AtlasRatio;
+  duration: number;
+  seed: number;
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const parseAtlasNumber = (value: unknown, fallback: number): number => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+};
+
+const normalizeAtlasImages = (inputParams: any): string[] => {
+  const rawImages = inputParams?.images;
+  if (Array.isArray(rawImages)) {
+    return rawImages
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  }
+
+  const singleImageCandidates = [
+    inputParams?.input_image,
+    inputParams?.image_url,
+    inputParams?.reference_image,
+  ];
+  return singleImageCandidates
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .slice(0, 1);
+};
+
+function buildAtlasRequestBody(input: {
+  prompt?: string;
+  inputParams?: any;
+}): AtlasVideoRequestBody {
+  const prompt = input.prompt?.trim();
+  if (!prompt) {
+    throw new Error("Atlas image_to_video requires a non-empty prompt.");
+  }
+
+  const images = normalizeAtlasImages(input.inputParams);
+  if (images.length < 1 || images.length > 9) {
+    throw new Error("Atlas image_to_video requires 1 to 9 image URLs in inputParams.images.");
+  }
+
+  const resolutionValue = input.inputParams?.resolution ?? "1080p";
+  if (
+    typeof resolutionValue !== "string" ||
+    !ATLAS_ALLOWED_RESOLUTIONS.includes(resolutionValue as AtlasResolution)
+  ) {
+    throw new Error("Atlas resolution must be one of: 480p, 720p, 1080p.");
+  }
+
+  const ratioValue = input.inputParams?.ratio ?? "16:9";
+  if (
+    typeof ratioValue !== "string" ||
+    !ATLAS_ALLOWED_RATIOS.includes(ratioValue as AtlasRatio)
+  ) {
+    throw new Error("Atlas ratio must be one of: 16:9, 9:16, 1:1, 4:3, 3:4, 4:5, 5:4, 9:21, 21:9.");
+  }
+
+  const duration = parseAtlasNumber(input.inputParams?.duration, 5);
+  if (!Number.isInteger(duration) || duration < 3 || duration > 15) {
+    throw new Error("Atlas duration must be an integer between 3 and 15.");
+  }
+
+  const seed = parseAtlasNumber(input.inputParams?.seed, -1);
+  if (!Number.isInteger(seed) || seed < -1 || seed > 2147483647) {
+    throw new Error("Atlas seed must be an integer between -1 and 2147483647.");
+  }
+
+  return {
+    model: ATLAS_VIDEO_MODEL,
+    prompt,
+    images,
+    resolution: resolutionValue as AtlasResolution,
+    ratio: ratioValue as AtlasRatio,
+    duration,
+    seed,
+  };
+}
+
+async function callAtlasVideoApi(
+  input: { tool: string; prompt?: string; inputParams?: any; inputMediaId?: number },
+  apiKey: string,
+): Promise<ProviderResult | null> {
+  if (input.tool !== "image_to_video") {
+    throw new Error("Atlas provider supports only image_to_video.");
+  }
+
+  const requestBody = buildAtlasRequestBody(input);
+  const submitResponse = await fetch("https://api.atlascloud.ai/api/v1/model/generateVideo", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + apiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!submitResponse.ok) {
+    const errText = await submitResponse.text();
+    throw new Error(`Atlas API submit error: ${submitResponse.status} - ${errText}`);
+  }
+
+  const submitData = await submitResponse.json() as { data?: { id?: string } };
+  const predictionId = submitData.data?.id;
+  if (!predictionId) {
+    throw new Error("Atlas API response missing prediction id at data.id.");
+  }
+
+  const pollUrl = `https://api.atlascloud.ai/api/v1/model/prediction/${encodeURIComponent(predictionId)}`;
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    const pollResponse = await fetch(pollUrl, {
+      method: "GET",
+      headers: {
+        Authorization: "Bearer " + apiKey,
+      },
+    });
+
+    if (!pollResponse.ok) {
+      const errText = await pollResponse.text();
+      throw new Error(`Atlas API poll error: ${pollResponse.status} - ${errText}`);
+    }
+
+    const pollData = await pollResponse.json() as {
+      data?: { status?: string; outputs?: string[]; error?: string };
+    };
+
+    const status = pollData.data?.status;
+    if (status === "completed" || status === "succeeded") {
+      const outputUrl = pollData.data?.outputs?.[0];
+      if (!outputUrl) {
+        throw new Error("Atlas API completed without an output URL in data.outputs[0].");
+      }
+      return { url: outputUrl, type: "video" };
+    }
+
+    if (status === "failed") {
+      throw new Error(pollData.data?.error || "Atlas video generation failed.");
+    }
+
+    await sleep(2000);
+  }
+
+  throw new Error("Atlas video generation timed out while waiting for completion.");
+}
+
 // ─── Hugging Face API Caller ───────────────────────────────────────────────
 
 async function callHuggingFaceApi(
@@ -536,7 +742,7 @@ async function callHuggingFaceApi(
   const response = await fetch(`https://api-inference.huggingface.co/models/${modelId}`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
+      "Authorization": "Bearer " + apiKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ inputs: input.prompt || "A beautiful image" }),
@@ -636,7 +842,7 @@ async function callFalApi(
   const response = await fetch(apiUrl, {
     method: "POST",
     headers: {
-      "Authorization": `Key ${apiKey}`,
+      "Authorization": "Bearer " + apiKey,
       "Content-Type": "application/json",
     },
     body: JSON.stringify(requestBody),

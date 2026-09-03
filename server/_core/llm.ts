@@ -1,4 +1,5 @@
 import { ENV } from "./env";
+import { resolveProviderApiKey } from "./providerKeyResolver";
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
@@ -214,11 +215,12 @@ const resolveApiUrl = () =>
     ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
     : "https://forge.manus.im/v1/chat/completions";
 
-const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
-  }
-};
+const resolveChatApiKey = () =>
+  resolveProviderApiKey({
+    provider: "openrouter",
+    modality: "chat",
+    userApiKey: null,
+  });
 
 const normalizeResponseFormat = ({
   responseFormat,
@@ -266,7 +268,7 @@ const normalizeResponseFormat = ({
 };
 
 export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
-  assertApiKey();
+  const chatApiKey = resolveChatApiKey();
 
   const {
     messages,
@@ -316,7 +318,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
+      authorization: "Bearer " + chatApiKey,
     },
     body: JSON.stringify(payload),
   });
